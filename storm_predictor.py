@@ -75,3 +75,36 @@ GRID_SIZE = 1.0
 UF_LAT, UF_LON = 29.643946, -82.355659
 UF_COORDS = (UF_LAT, UF_LON)
 MAX_TRACKS = 300 # Limit to avoid cluttering the map and performance issues, still going slow sometimes
+
+# -------------------- Main Script --------------------
+# --- Load raw hurricane data ---
+storm_df = pd.read_csv("hurdat2.csv")
+
+storm_df['Latitude'] = storm_df['latitude'].apply(convert_lat)
+storm_df['Longitude'] = storm_df['longitude'].apply(convert_lon)
+
+# --- Filter to hurricanes only ---
+storm_df = storm_df[storm_df['maximum_sustained_wind_knots'] >= 64] # 64 knots = 74 mph = cat 1 hurricane strength
+
+# --- Assign grid cells (1-degree resolution) ---
+storm_df['lat_bin'] = storm_df['Latitude'].apply(lambda x: np.floor(x / GRID_SIZE) * GRID_SIZE)
+storm_df['lon_bin'] = storm_df['Longitude'].apply(lambda x: np.floor(x / GRID_SIZE) * GRID_SIZE)
+storm_df['grid_cell'] = list(zip(storm_df['lat_bin'], storm_df['lon_bin']))
+
+uf_hits = storm_df[storm_df.apply(is_uf_hit, axis=1)]
+uf_storm_ids = set(uf_hits['storm_id'])
+
+# --- Compute total and UF-hit counts per grid cell ---
+grid_stats = storm_df.groupby(['lat_bin', 'lon_bin'])['storm_id'].nunique().reset_index()
+grid_stats.columns = ['lat_bin', 'lon_bin', 'total']
+
+uf_subset = storm_df[storm_df['storm_id'].isin(uf_storm_ids)]
+uf_grid_stats = uf_subset.groupby(['lat_bin', 'lon_bin'])['storm_id'].nunique().reset_index()
+uf_grid_stats.columns = ['lat_bin', 'lon_bin', 'uf_hits']
+
+# --- Merge counts and calculate probabilities ---
+grid_df = pd.merge(grid_stats, uf_grid_stats, how='left', on=['lat_bin', 'lon_bin'])
+grid_df['uf_hits'] = grid_df['uf_hits'].fillna(0)
+grid_df['prob_to_uf'] = grid_df['uf_hits'] / grid_df['total']
+
+storm_to_cells = storm_df.groupby('storm_id')['grid_cell'].apply(set)
