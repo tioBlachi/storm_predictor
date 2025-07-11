@@ -135,3 +135,56 @@ visible_storms = [
 if len(visible_storms) > MAX_TRACKS:
     st.warning(f"Too many storms to display ({len(visible_storms)}). Showing only the first {MAX_TRACKS}.")
     visible_storms = visible_storms[:MAX_TRACKS]
+
+# --- Create map ---
+m = folium.Map(location=[UF_LAT, UF_LON], zoom_start=5)
+
+# --- Draw grid rectangles with popups ---
+for _, row in filtered_grids.iterrows():
+    lat, lon = row['lat_bin'], row['lon_bin']
+    prob = row['prob_to_uf']
+    bounds = [[lat, lon], [lat + 1.0, lon + 1.0]]
+
+    storms_in_cell = storm_df[storm_df['grid_cell'] == (lat, lon)]['storm_id'].nunique()
+    popup = f"""
+    <b>Grid Cell:</b> ({lat}, {lon})<br>
+    <b>UF Hits:</b> {int(row['uf_hits'])}<br>
+    <b>Probability:</b> {prob * 100:.1f}%<br>
+    <b>Storms:</b> {storms_in_cell}
+    """
+
+    folium.Rectangle(
+        bounds=bounds,
+        color=get_risk_color(prob),
+        fill_color=get_risk_color(prob),
+        fill_opacity=0.6,
+        weight=0.5,
+        popup=folium.Popup(popup, max_width=250)
+    ).add_to(m)
+
+# --- Add UF location marker ---
+folium.Marker(
+    location=[UF_LAT, UF_LON],
+    popup="University of Florida",
+    icon=folium.Icon(color="purple", icon="university", prefix='fa')
+).add_to(m)
+
+# --- Optionally draw storm tracks ---
+# Kind of a mess need to clean up or remove
+if show_tracks:
+    for storm_id in visible_storms:
+        track = storm_df[storm_df['storm_id'] == storm_id].sort_values(by='date')
+        points = track[['Latitude', 'Longitude']].values.tolist()
+        if len(points) > 1:
+            points = points[::4]  # downsample, hopefully this is enough to show the track without cluttering
+            folium.PolyLine(points, color="black", weight=2, opacity=0.1).add_to(m)
+            folium.CircleMarker(
+                location=points[-1],
+                radius=3,
+                color="black",
+                fill=True,
+                fill_opacity=1
+            ).add_to(m)
+
+# --- Render map in Streamlit ---
+st_folium(m, width=1000, height=600)
