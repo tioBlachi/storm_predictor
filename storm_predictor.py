@@ -108,3 +108,30 @@ grid_df['uf_hits'] = grid_df['uf_hits'].fillna(0)
 grid_df['prob_to_uf'] = grid_df['uf_hits'] / grid_df['total']
 
 storm_to_cells = storm_df.groupby('storm_id')['grid_cell'].apply(set)
+
+# --- Streamlit layout ---
+st.set_page_config(
+    page_title = "UF Hurricane Risk",
+    page_icon="🌀",
+)
+st.title("Hurricane Risk Zones Near UF")
+st.markdown("""
+This tool visualizes the probability that a storm **in a given region** will later pass within ~50 miles of the University of Florida (Gainesville).
+Use the sidebar to adjust probability thresholds and toggle storm tracks.
+""")
+threshold = st.sidebar.slider("Minimum Probability Threshold", 0.0, 1.0, 0.05, 0.01)
+show_tracks = st.sidebar.checkbox("Show storm tracks", value=False)
+
+# --- Filter visible grid cells ---
+filtered_grids = grid_df[grid_df['prob_to_uf'] >= threshold]
+visible_cells = set(tuple(x) for x in filtered_grids[['lat_bin', 'lon_bin']].values)
+
+# --- Identify storms passing through visible cells ---
+visible_storms = [
+    storm_id for storm_id, cells in storm_to_cells.items()
+    if any(cell in visible_cells for cell in cells)
+]
+
+if len(visible_storms) > MAX_TRACKS:
+    st.warning(f"Too many storms to display ({len(visible_storms)}). Showing only the first {MAX_TRACKS}.")
+    visible_storms = visible_storms[:MAX_TRACKS]
