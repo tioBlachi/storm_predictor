@@ -24,11 +24,9 @@ def is_uf_hit(row):
     and check if it is within the radius of maximum wind.
     """
     if row['radius_of_max_wind_nm'] == -999:
-        # Use bounding box if no radius data
-        return (
-            UF_LAT - 0.75 <= row['Latitude'] <= UF_LAT + 0.75 and
-            UF_LON - 0.75 <= row['Longitude'] <= UF_LON + 0.75
-        )
+        storm_coord = (row['Latitude'], row['Longitude'])
+        return geodesic(storm_coord, UF_COORDS).km <= 100
+
     else:
         # Use radius-based geodesic distance
         storm_coord = (row['Latitude'], row['Longitude'])
@@ -84,12 +82,13 @@ storm_df['Latitude'] = storm_df['latitude'].apply(convert_lat)
 storm_df['Longitude'] = storm_df['longitude'].apply(convert_lon)
 
 # --- Filter to hurricanes only ---
-storm_df = storm_df[storm_df['maximum_sustained_wind_knots'] >= 64] # 64 knots = 74 mph = cat 1 hurricane strength
+#storm_df = storm_df[storm_df['maximum_sustained_wind_knots'] >= 64] # 64 knots = 74 mph = cat 1 hurricane strength
 
 # --- Assign grid cells (1-degree resolution) ---
 storm_df['lat_bin'] = storm_df['Latitude'].apply(lambda x: np.floor(x / GRID_SIZE) * GRID_SIZE)
 storm_df['lon_bin'] = storm_df['Longitude'].apply(lambda x: np.floor(x / GRID_SIZE) * GRID_SIZE)
 storm_df['grid_cell'] = list(zip(storm_df['lat_bin'], storm_df['lon_bin']))
+storm_df['year'] = pd.to_datetime(storm_df['date'], format='%Y%m%d', errors='coerce').dt.year
 
 uf_hits = storm_df[storm_df.apply(is_uf_hit, axis=1)]
 uf_storm_ids = set(uf_hits['storm_id'])
@@ -109,16 +108,51 @@ grid_df['prob_to_uf'] = grid_df['uf_hits'] / grid_df['total']
 
 storm_to_cells = storm_df.groupby('storm_id')['grid_cell'].apply(set)
 
+# --- Train/Validation split ---
+train_df = storm_df[storm_df['year'] <= 2000]
+val_df = storm_df[storm_df['year'] > 2000]
+
+# --- Validation: compute actual UF hit probability ---
+val_hits = val_df[val_df.apply(is_uf_hit, axis=1)]
+
+val_hit_ids = set(val_hits['storm_id'])
+
+val_stats = val_df.groupby(['lat_bin', 'lon_bin'])['storm_id'].nunique().reset_index()
+val_stats.columns = ['lat_bin', 'lon_bin', 'val_total']
+
+val_uf_subset = val_df[val_df['storm_id'].isin(val_hit_ids)]
+val_uf_stats = val_uf_subset.groupby(['lat_bin', 'lon_bin'])['storm_id'].nunique().reset_index()
+val_uf_stats.columns = ['lat_bin', 'lon_bin', 'val_uf_hits']
+
+val_grid = pd.merge(val_stats, val_uf_stats, how='left', on=['lat_bin', 'lon_bin'])
+val_grid['val_uf_hits'] = val_grid['val_uf_hits'].fillna(0)
+val_grid['actual_prob'] = val_grid['val_uf_hits'] / val_grid['val_total']
+
+# --- Merge with grid_df and calculate error ---
+grid_df = pd.merge(grid_df, val_grid[['lat_bin', 'lon_bin', 'actual_prob']], on=['lat_bin', 'lon_bin'], how='left')
+grid_df['actual_prob'] = grid_df['actual_prob'].fillna(0)
+grid_df['abs_error'] = np.abs(grid_df['prob_to_uf'] - grid_df['actual_prob'])
+grid_df['squared_error'] = (grid_df['prob_to_uf'] - grid_df['actual_prob']) ** 2
+
+# --- Compute global MAE and RMSE ---
+mae = grid_df['abs_error'].mean()
+rmse = np.sqrt(grid_df['squared_error'].mean())
+
+
 # --- Streamlit layout ---
 st.set_page_config(
-    page_title = "UF Hurricane Risk",
+    page_title = "UF Storm Risk",
     page_icon="🌀",
 )
-st.title("Hurricane Risk Zones Near UF")
+st.title("Storm Risk Zones Near UF")
 st.markdown("""
 This tool visualizes the probability that a storm **in a given region** will later pass within ~50 miles of the University of Florida (Gainesville).
 Use the sidebar to adjust probability thresholds and toggle storm tracks.
 """)
+
+st.write(f"**Global Mean Absolute Error (MAE):** {mae:.4f}")
+st.write(f"**Global Root Mean Squared Error (RMSE):** {rmse:.4f}")
+
 threshold = st.sidebar.slider("Minimum Probability Threshold", 0.0, 1.0, 0.05, 0.01)
 show_tracks = st.sidebar.checkbox("Show storm tracks", value=False)
 
@@ -132,12 +166,8 @@ visible_storms = [
     if any(cell in visible_cells for cell in cells)
 ]
 
-if len(visible_storms) > MAX_TRACKS:
-    st.warning(f"Too many storms to display ({len(visible_storms)}). Showing only the first {MAX_TRACKS}.")
-    visible_storms = visible_storms[:MAX_TRACKS]
-
 # --- Create map ---
-m = folium.Map(location=[UF_LAT, UF_LON], zoom_start=5)
+m = folium.Map(location=[UF_LAT, -60], zoom_start=4)
 
 # --- Draw grid rectangles with popups ---
 for _, row in filtered_grids.iterrows():
@@ -147,10 +177,12 @@ for _, row in filtered_grids.iterrows():
 
     storms_in_cell = storm_df[storm_df['grid_cell'] == (lat, lon)]['storm_id'].nunique()
     popup = f"""
-    <b>Grid Cell:</b> ({lat}, {lon})<br>
-    <b>UF Hits:</b> {int(row['uf_hits'])}<br>
-    <b>Probability:</b> {prob * 100:.1f}%<br>
-    <b>Storms:</b> {storms_in_cell}
+        <b>Grid Cell:</b> ({lat}, {lon})<br>
+        <b>UF Hits (Train):</b> {int(row['uf_hits'])}<br>
+        <b>Predicted Probability:</b> {row['prob_to_uf'] * 100:.1f}%<br>
+        <b>Observed Probability:</b> {row['actual_prob'] * 100:.1f}%<br>
+        <b>Absolute Error:</b> {row['abs_error'] * 100:.2f}%<br>
+        <b>Storms:</b> {storms_in_cell}
     """
 
     folium.Rectangle(
