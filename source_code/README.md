@@ -16,6 +16,7 @@ pip install -r requirements.txt
 ```bash
 streamlit run source_code/storm_predictor.py
 ```
+This also serves as visualization.
 
 ## Exploring The Map
 The global MAE and RMSE are displayed above the map. 
