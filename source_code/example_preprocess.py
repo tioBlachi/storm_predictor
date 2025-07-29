@@ -7,7 +7,7 @@ def convert_lat(lat_str):
     return float(lat_str[:-1]) * (1 if lat_str[-1] == 'N' else -1)
 
 def convert_lon(lon_str):
-    return float(lat_str[:-1]) * (-1 if lon_str[-1] == 'W' else 1)
+    return float(lon_str[:-1]) * (-1 if lon_str[-1] == 'W' else 1)
 
 def preprocess_data(filepath):
     storm_df = pd.read_csv(filepath)
